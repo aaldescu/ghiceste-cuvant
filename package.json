@@ -1,0 +1,16 @@
+{
+  "name": "ghiceste-cuvant",
+  "version": "1.0.0",
+  "description": "Joc: gândește-te la un cuvânt, iar Claude îl ghicește doar din conversație.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0"
+  }
+}
