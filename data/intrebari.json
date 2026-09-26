@@ -1,0 +1,250 @@
+[
+ {
+  "id": "viu",
+  "text": "Este o ființă vie (om, animal sau plantă)?"
+ },
+ {
+  "id": "animal",
+  "text": "Este un animal?"
+ },
+ {
+  "id": "mamifer",
+  "text": "Este un mamifer?"
+ },
+ {
+  "id": "pasare",
+  "text": "Este o pasăre?"
+ },
+ {
+  "id": "insecta",
+  "text": "Este o insectă sau o gânganie?"
+ },
+ {
+  "id": "apa",
+  "text": "Trăiește sau se găsește mai ales în apă?"
+ },
+ {
+  "id": "zboara",
+  "text": "Poate să zboare?"
+ },
+ {
+  "id": "salbatic",
+  "text": "Este un animal sălbatic?"
+ },
+ {
+  "id": "domestic",
+  "text": "Este un animal de companie sau de fermă?"
+ },
+ {
+  "id": "periculos",
+  "text": "Poate fi periculos pentru oameni?"
+ },
+ {
+  "id": "blana",
+  "text": "Are blană sau pene?"
+ },
+ {
+  "id": "patru_picioare",
+  "text": "Are patru picioare?"
+ },
+ {
+  "id": "mare_ca_omul",
+  "text": "Este mai mare decât un om?"
+ },
+ {
+  "id": "in_palma",
+  "text": "Încape în palma mâinii?"
+ },
+ {
+  "id": "planta",
+  "text": "Este o plantă sau vine direct dintr-o plantă?"
+ },
+ {
+  "id": "mancare",
+  "text": "Se mănâncă?"
+ },
+ {
+  "id": "bautura",
+  "text": "Este o băutură?"
+ },
+ {
+  "id": "dulce",
+  "text": "Are gust dulce?"
+ },
+ {
+  "id": "fruct",
+  "text": "Este un fruct?"
+ },
+ {
+  "id": "leguma",
+  "text": "Este o legumă?"
+ },
+ {
+  "id": "gatit",
+  "text": "Este un fel de mâncare gătit?"
+ },
+ {
+  "id": "alcool",
+  "text": "Conține alcool?"
+ },
+ {
+  "id": "persoana",
+  "text": "Este o persoană?"
+ },
+ {
+  "id": "meserie",
+  "text": "Este o meserie?"
+ },
+ {
+  "id": "corp",
+  "text": "Este o parte a corpului?"
+ },
+ {
+  "id": "facut_de_om",
+  "text": "Este făcut de om?"
+ },
+ {
+  "id": "electric",
+  "text": "Funcționează cu electricitate sau baterii?"
+ },
+ {
+  "id": "ecran",
+  "text": "Are ecran?"
+ },
+ {
+  "id": "in_casa",
+  "text": "Se găsește de obicei într-o casă?"
+ },
+ {
+  "id": "bucatarie",
+  "text": "Se folosește în bucătărie?"
+ },
+ {
+  "id": "mobila",
+  "text": "Este o piesă de mobilier?"
+ },
+ {
+  "id": "vehicul",
+  "text": "Este un vehicul sau un mijloc de transport?"
+ },
+ {
+  "id": "motor",
+  "text": "Are motor?"
+ },
+ {
+  "id": "roti",
+  "text": "Are roți?"
+ },
+ {
+  "id": "purtat",
+  "text": "Se poartă pe corp (haine, încălțăminte, accesorii)?"
+ },
+ {
+  "id": "unealta",
+  "text": "Este o unealtă sau un ustensil cu care lucrezi ceva?"
+ },
+ {
+  "id": "ascutit",
+  "text": "Este ascuțit sau poate tăia?"
+ },
+ {
+  "id": "muzica",
+  "text": "Are legătură cu muzica?"
+ },
+ {
+  "id": "joaca",
+  "text": "Se folosește la joacă sau la sport?"
+ },
+ {
+  "id": "scoala",
+  "text": "Se folosește la școală sau la birou?"
+ },
+ {
+  "id": "metal",
+  "text": "Este făcut în mare parte din metal?"
+ },
+ {
+  "id": "lemn",
+  "text": "Este făcut în mare parte din lemn?"
+ },
+ {
+  "id": "loc",
+  "text": "Este un loc (clădire, zonă, formă de relief)?"
+ },
+ {
+  "id": "cladire",
+  "text": "Este o clădire?"
+ },
+ {
+  "id": "natura",
+  "text": "Face parte din natura neînsuflețită (relief, cer, vreme, apă)?"
+ },
+ {
+  "id": "cer",
+  "text": "Se află pe cer sau are legătură cu vremea?"
+ },
+ {
+  "id": "lichid",
+  "text": "Este un lichid?"
+ },
+ {
+  "id": "fierbinte",
+  "text": "Este de obicei cald sau fierbinte?"
+ },
+ {
+  "id": "rece",
+  "text": "Este de obicei rece?"
+ },
+ {
+  "id": "verde",
+  "text": "Este de obicei verde?"
+ },
+ {
+  "id": "rosu",
+  "text": "Este de obicei roșu?"
+ },
+ {
+  "id": "alb",
+  "text": "Este de obicei alb?"
+ },
+ {
+  "id": "galben",
+  "text": "Este de obicei galben sau portocaliu?"
+ },
+ {
+  "id": "rotund",
+  "text": "Are formă rotundă?"
+ },
+ {
+  "id": "abstract",
+  "text": "Este ceva abstract, care nu poate fi atins?"
+ },
+ {
+  "id": "zilnic",
+  "text": "Îl folosești sau îl întâlnești aproape în fiecare zi?"
+ },
+ {
+  "id": "scump",
+  "text": "Costă de obicei mult?"
+ },
+ {
+  "id": "afara",
+  "text": "Se găsește mai ales afară, în aer liber?"
+ },
+ {
+  "id": "romanesc",
+  "text": "Are o legătură specială cu România sau tradițiile românești?"
+ },
+ {
+  "id": "sunet",
+  "text": "Face zgomot sau scoate sunete?"
+ },
+ {
+  "id": "iarna",
+  "text": "Are legătură cu iarna?"
+ },
+ {
+  "id": "copii",
+  "text": "Le place mai ales copiilor?"
+ }
+]

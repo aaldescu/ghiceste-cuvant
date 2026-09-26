@@ -62,19 +62,21 @@
 </main>
 
 <script>
-  const QUESTION_ANSWERS = ["Da", "Nu", "Nu știu", "Probabil", "Probabil nu"];
-  const GUESS_ANSWERS = ["Da, ai ghicit!", "Nu"];
+  // Cât de „da" e fiecare buton: 1 = da, 0 = nu.
+  const QUESTION_ANSWERS = [["Da", 1], ["Nu", 0], ["Nu știu", 0.5], ["Probabil", 0.75], ["Probabil nu", 0.25]];
+  const GUESS_ANSWERS = [["Da, ai ghicit!", 1], ["Nu", 0]];
 
   const chat = document.getElementById("chat");
-  const answers = document.getElementById("answers");
+  const buttons = document.getElementById("answers");
   const form = document.getElementById("free");
   const textInput = document.getElementById("text");
   const showCandidates = document.getElementById("showCandidates");
 
-  // Istoria e ținută doar în memorie, în pagină. Cuvântul jucătorului nu apare nicăieri.
-  let history = [];
-  let busy = false;
+  // Starea jocului e ținută doar în pagină: răspunsurile ca numere, nu cuvântul jucătorului.
+  let answers = [];   // [{q: id_întrebare, y: 0..1}]
+  let rejected = [];  // ghiciri greșite
   let lastTurn = null;
+  let busy = false;
 
   function addBubble(text, who) {
     const div = document.createElement("div");
@@ -85,75 +87,124 @@
     return div;
   }
 
-  function addMeta(turn) {
-    if (!showCandidates.checked || !turn.candidates?.length) return;
+  function addMeta(text) {
     const div = document.createElement("div");
     div.className = "meta";
-    div.textContent = `Candidați: ${turn.candidates.join(", ")} · siguranță ${Math.round(turn.confidence * 100)}%`;
+    div.textContent = text;
     chat.appendChild(div);
   }
 
-  function renderButtons(turn) {
-    answers.innerHTML = "";
-    const done = turn?.kind === "done";
-    const labels = done ? [] : turn?.kind === "guess" ? GUESS_ANSWERS : QUESTION_ANSWERS;
-    for (const label of labels) {
+  function addError(message) {
+    addBubble(message, "bot").classList.add("error");
+  }
+
+  function finished() {
+    return lastTurn && (lastTurn.kind === "done" || lastTurn.kind === "giveup");
+  }
+
+  function renderButtons() {
+    buttons.innerHTML = "";
+    const options = finished() || !lastTurn ? [] : lastTurn.kind === "guess" ? GUESS_ANSWERS : QUESTION_ANSWERS;
+    for (const [label, y] of options) {
       const b = document.createElement("button");
       b.textContent = label;
       b.disabled = busy;
-      b.onclick = () => answer(label);
-      answers.appendChild(b);
+      b.onclick = () => answer(label, y);
+      buttons.appendChild(b);
     }
     const restart = document.createElement("button");
     restart.textContent = "Joc nou";
-    restart.className = done ? "primary" : "";
+    restart.className = finished() ? "primary" : "";
     restart.disabled = busy;
     restart.onclick = startGame;
-    answers.appendChild(restart);
-    form.style.display = done ? "none" : "flex";
+    buttons.appendChild(restart);
+    form.style.display = finished() ? "none" : "flex";
     textInput.disabled = busy;
   }
 
-  async function requestTurn() {
-    busy = true;
-    renderButtons(lastTurn);
-    const thinking = addBubble("…", "bot");
+  async function post(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Eroare necunoscută.");
+    return data;
+  }
+
+  function setBusy(value) {
+    busy = value;
+    renderButtons();
+  }
+
+  // undo: anulează ultimul răspuns dacă serverul nu răspunde, ca jucătorul să poată reîncerca.
+  async function requestTurn(undo) {
+    setBusy(true);
     try {
-      const res = await fetch("/api/turn", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ history }),
-      });
-      const data = await res.json();
-      thinking.remove();
-      if (!res.ok) throw new Error(data.error || "Eroare necunoscută.");
-      lastTurn = data;
-      history.push({ role: "assistant", content: JSON.stringify(data) });
-      addBubble(data.message, "bot");
-      addMeta(data);
+      lastTurn = await post("/api/turn", { answers, rejected });
+      addBubble(lastTurn.message, "bot");
+      if (showCandidates.checked && lastTurn.candidates) {
+        addMeta(`Candidați: ${lastTurn.candidates.join(", ")} · siguranță ${Math.round(lastTurn.confidence * 100)}%`);
+      }
     } catch (err) {
-      thinking.remove();
-      // Scoatem ultimul răspuns al jucătorului ca să poată reîncerca.
-      if (history.length && history[history.length - 1].role === "user") history.pop();
-      const e = addBubble(err.message + " Apasă din nou pe un răspuns.", "bot");
-      e.classList.add("error");
+      if (undo) undo();
+      addError(err.message + " Mai încearcă.");
     } finally {
-      busy = false;
-      renderButtons(lastTurn);
-      if (lastTurn?.kind !== "done") textInput.focus();
+      setBusy(false);
+      if (!finished()) textInput.focus();
     }
   }
 
-  function answer(text) {
-    if (busy || !text.trim() || lastTurn?.kind === "done") return;
-    if (!lastTurn) return startGame();
-    history.push({ role: "user", content: text.trim() });
+  // y: cât de „da" e răspunsul (0..1).
+  function applyAnswer(y) {
+    if (lastTurn.kind === "guess") {
+      if (y >= 0.5) {
+        lastTurn = { kind: "done" };
+        addBubble(`Am ghicit din ${answers.length} întrebări! Mai jucăm?`, "bot");
+        renderButtons();
+        return;
+      }
+      rejected.push(lastTurn.guess);
+      requestTurn(() => rejected.pop());
+    } else {
+      answers.push({ q: lastTurn.question_id, y });
+      requestTurn(() => answers.pop());
+    }
+  }
+
+  function answer(label, y) {
+    if (busy || !lastTurn || finished()) return;
+    addBubble(label, "me");
+    applyAnswer(y);
+  }
+
+  // Răspuns liber: Jev (clasificator one-shot) decide dacă e da, nu sau ceva între.
+  async function answerFreeText(text) {
+    if (busy || !lastTurn || finished() || !text.trim()) return;
     addBubble(text.trim(), "me");
-    requestTurn();
+    setBusy(true);
+    const body = lastTurn.kind === "guess"
+      ? { guess: lastTurn.guess, text }
+      : { q: lastTurn.question_id, text };
+    let result;
+    try {
+      result = await post("/api/classify", body);
+    } catch (err) {
+      addError(err.message);
+      setBusy(false);
+      return;
+    }
+    if (showCandidates.checked) {
+      addMeta(`Jev a înțeles: ${result.label.replace("_", " ")} (${Math.round(result.confidence * 100)}%)`);
+    }
+    busy = false;
+    applyAnswer(result.y);
   }
 
   function startGame() {
-    history = [];
+    answers = [];
+    rejected = [];
     lastTurn = null;
     chat.innerHTML = "";
     requestTurn();
@@ -161,8 +212,9 @@
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    answer(textInput.value);
+    const text = textInput.value;
     textInput.value = "";
+    answerFreeText(text);
   });
 
   startGame();
