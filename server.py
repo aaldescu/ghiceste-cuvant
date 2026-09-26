@@ -1,17 +1,18 @@
-"""Ghicește cuvântul: jocul ghicește cuvântul la care te gândești doar din răspunsurile tale.
+"""Ghicește cuvântul: jucătorul descrie un cuvânt în conversație, fără să-l spună, iar jocul îl ghicește.
 
-Fără model generativ: întrebările vin din data/intrebari.json, iar motorul din game.py
-alege întrebarea următoare. Jev (TypeSafe AI, clasificator one-shot) e folosit:
-  - offline, în build_kb.py, ca să știm cum răspunde fiecare cuvânt la fiecare întrebare;
-  - live, doar când jucătorul răspunde liber, cu text, ca să aflăm dacă a vrut să spună da sau nu.
+Fără model generativ. La fiecare mesaj, Jev (TypeSafe AI, clasificator one-shot) citește toată
+conversația și dă, într-o singură cerere:
+  - o distribuție de probabilitate peste cuvintele din data/cuvinte.txt (plus „niciunul");
+  - dacă jocul tocmai a ghicit, ce a vrut să spună jucătorul: da sau nu.
+Replica jocului e aleasă din șabloane fixe în game.py.
 
 Cuvântul NU există nicăieri în sistem: nici în server, nici în browser.
-Serverul e fără stare: browserul trimite la fiecare pas răspunsurile de până acum.
+Serverul e fără stare: browserul trimite la fiecare pas toată conversația.
 """
 
 import json
-import math
 import os
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -19,83 +20,108 @@ from typesafe_sdk import (
     Choice,
     TypeSafeAPIConnectionError,
     TypeSafeAPIError,
+    TypeSafeAPITimeoutError,
     TypeSafeAuthenticationError,
     TypeSafeClient,
     TypeSafeError,
     TypeSafeRateLimitError,
 )
 
-from game import Game
+import game
 
 HERE = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", "8000"))
 MAX_BODY = 50_000
-MAX_ANSWERS = 60
+MAX_CONVERSATION = 40  # mesaje în total (jucător + joc)
+MAX_TEXT = 300
+JEV_TIMEOUT = 15  # secunde; o cerere normală durează sub o secundă
 
-game = Game.load()
-try:
-    jev = TypeSafeClient()
-except TypeSafeError:
-    jev = None  # fără cheie, jocul merge doar cu butoane
+WORDS = game.load_words()
+WORD_SET = set(WORDS)
 
-# Ce poate însemna un răspuns liber, și cât de „da" e fiecare variantă.
-ANSWER_LABELS = {
-    "da": (1.0, "Răspunsul înseamnă da / adevărat."),
-    "probabil": (0.75, "Răspunsul înseamnă probabil da, de obicei, uneori, parțial da."),
-    "nu_stiu": (0.5, "Jucătorul nu știe, depinde, sau răspunsul nu are legătură cu întrebarea."),
-    "probabil_nu": (0.25, "Răspunsul înseamnă probabil nu, rar, nu prea."),
-    "nu": (0.0, "Răspunsul înseamnă nu / fals."),
-}
-ANSWER_QUESTION = Choice(
-    instructions="Într-un joc de ghicit cuvinte, jucătorul a răspuns liber la întrebare. Ce a vrut să spună?",
-    criteria={label: description for label, (_, description) in ANSWER_LABELS.items()},
+CONTEXT = (
+    "Joc de ghicit cuvinte. Jucătorul se gândește la un cuvânt și îl descrie în conversație, "
+    "fără să-l spună. Jocul încearcă să ghicească. Mesajele sunt în ordine; "
+    "`cuvinte_respinse` sunt cuvinte pe care jucătorul a spus deja că nu sunt cuvântul lui."
 )
+GUESS_ANSWER = Choice(
+    instructions="Ultimul mesaj al jocului a fost o încercare de a ghici cuvântul. "
+    "Ce a răspuns jucătorul în ultimul lui mesaj?",
+    criteria={
+        "da": "Jucătorul confirmă: jocul a ghicit cuvântul.",
+        "nu": "Jucătorul spune că nu e cuvântul, sau continuă să descrie fără să confirme.",
+    },
+)
+
+
+def word_question(excluded):
+    return Choice(
+        instructions="La care dintre aceste cuvinte se gândește jucătorul, după tot ce a spus în conversație? "
+        f"Alege `{game.NONE}` dacă niciun cuvânt nu se potrivește.",
+        criteria={
+            **{w: None for w in WORDS if w not in excluded},
+            game.NONE: "Niciun cuvânt din listă nu se potrivește cu descrierea.",
+        },
+    )
 
 
 class BadRequest(Exception):
     pass
 
 
-def classify_free_answer(question, text):
-    """Transformă un răspuns liber într-un y între 0 (nu) și 1 (da), cu Jev."""
-    if jev is None:
-        raise BadRequest("Răspunsurile libere au nevoie de TYPESAFE_API_KEY. Folosește butoanele.")
-    result = jev.system_one(
-        state={"intrebare": question, "raspuns": text},
-        questions={"sens": ANSWER_QUESTION},
-    )
-    answer = result.choices["sens"]
-    y = sum(prob * ANSWER_LABELS[label][0] for label, prob in answer.probabilities.items() if label in ANSWER_LABELS)
-    return {"y": round(y, 3), "label": answer.choice, "confidence": answer.confidence}
-
-
 def parse_turn(payload):
-    answers = payload.get("answers", [])
+    conversation = payload.get("conversation")
     rejected = payload.get("rejected", [])
-    if not isinstance(answers, list) or len(answers) > MAX_ANSWERS:
-        raise BadRequest("Listă de răspunsuri invalidă.")
-    if not isinstance(rejected, list) or not all(w in game.p_yes for w in rejected):
+    guess = payload.get("guess")
+    guess_answer = payload.get("guess_answer")
+    if not isinstance(conversation, list) or not 0 < len(conversation) <= MAX_CONVERSATION:
+        raise BadRequest("Conversație invalidă.")
+    for m in conversation:
+        if not isinstance(m, dict) or m.get("from") not in ("player", "game"):
+            raise BadRequest("Mesaj invalid.")
+        if not isinstance(m.get("text"), str) or not 0 < len(m["text"].strip()) <= MAX_TEXT:
+            raise BadRequest(f"Un mesaj trebuie să aibă între 1 și {MAX_TEXT} de caractere.")
+    if conversation[-1]["from"] != "player":
+        raise BadRequest("Ultimul mesaj trebuie să fie al jucătorului.")
+    if not isinstance(rejected, list) or not all(w in WORD_SET for w in rejected):
         raise BadRequest("Listă de cuvinte respinse invalidă.")
-    parsed = []
-    for a in answers:
-        q, y = (a.get("q"), a.get("y")) if isinstance(a, dict) else (None, None)
-        if q not in game.questions or not isinstance(y, (int, float)) or not math.isfinite(y) or not 0 <= y <= 1:
-            raise BadRequest("Răspuns invalid.")
-        parsed.append((q, float(y)))
-    return parsed, rejected
+    if guess is not None and guess not in WORD_SET:
+        raise BadRequest("Ghicire invalidă.")
+    if guess_answer is not None and not isinstance(guess_answer, bool):
+        raise BadRequest("Răspuns invalid.")
+    return conversation, rejected, guess, guess_answer
 
 
-def parse_classify(payload):
-    text = payload.get("text")
-    if not isinstance(text, str) or not 0 < len(text.strip()) <= 300:
-        raise BadRequest("Răspunsul trebuie să aibă între 1 și 300 de caractere.")
-    if payload.get("guess") in game.p_yes:
-        question = f"Te gândești la cuvântul „{payload['guess']}”?"
-    elif payload.get("q") in game.questions:
-        question = game.questions[payload["q"]]
-    else:
-        raise BadRequest("Întrebare necunoscută.")
-    return question, text.strip()
+def play_turn(conversation, rejected, guess, guess_answer):
+    """Un pas de joc: o singură cerere la Jev, apoi game.next_turn decide replica."""
+    # Dacă jocul a ghicit, întrebăm speculativ fără cuvântul ghicit: îl folosim doar dacă răspunsul e „nu".
+    excluded = set(rejected) | ({guess} if guess else set())
+    questions = {"cuvant": word_question(excluded)}
+    if guess and guess_answer is None:
+        questions["raspuns_ghicire"] = GUESS_ANSWER
+    result = jev.system_one(
+        state={
+            "context": CONTEXT,
+            "conversatie": [
+                {"cine": "jucător" if m["from"] == "player" else "joc", "text": m["text"].strip()}
+                for m in conversation
+            ],
+            "cuvinte_respinse": sorted(excluded),
+        },
+        questions=questions,
+    )
+
+    if guess:
+        if guess_answer is None:
+            guess_answer = result.choices["raspuns_ghicire"].probabilities.get("da", 0.0) >= 0.5
+        if guess_answer:
+            return {"kind": "done", "message": f"Am ghicit: „{guess}”! Mai jucăm?", "rejected": rejected}
+        rejected = rejected + [guess]
+
+    player_messages = sum(m["from"] == "player" for m in conversation)
+    probs = result.choices["cuvant"].probabilities
+    turn = game.next_turn(probs, rejected, player_messages, after_wrong_guess=bool(guess))
+    return {**turn, "rejected": rejected}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -119,8 +145,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        routes = {"/api/turn": self.turn, "/api/classify": self.classify}
-        if self.path not in routes:
+        if self.path != "/api/turn":
             self.send_error(404)
             return
         try:
@@ -130,33 +155,30 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
             if not isinstance(payload, dict):
                 raise BadRequest("Cerere invalidă.")
-            self.send_json(200, routes[self.path](payload))
+            self.send_json(200, play_turn(*parse_turn(payload)))
         except (BadRequest, ValueError) as e:
             self.send_json(400, {"error": str(e) if isinstance(e, BadRequest) else "Cerere invalidă."})
         except TypeSafeAuthenticationError:
             self.send_json(500, {"error": "Lipsește sau e greșită cheia TYPESAFE_API_KEY."})
         except TypeSafeRateLimitError:
             self.send_json(429, {"error": "Prea multe cereri. Așteaptă puțin."})
+        except TypeSafeAPITimeoutError:
+            self.send_json(504, {"error": "Jev răspunde prea greu."})
         except TypeSafeAPIConnectionError:
-            self.send_json(502, {"error": "Nu mă pot conecta la Jev. Folosește butoanele."})
+            self.send_json(502, {"error": "Nu mă pot conecta la Jev."})
         except TypeSafeAPIError as e:
             print(f"Jev: {e}")
-            self.send_json(502, {"error": "Eroare la Jev. Folosește butoanele."})
+            self.send_json(502, {"error": "Eroare la Jev."})
         except TypeSafeError as e:
             print(f"TypeSafe: {e}")
             self.send_json(500, {"error": "Eroare la Jev."})
 
-    def turn(self, payload):
-        answers, rejected = parse_turn(payload)
-        return game.next_turn(answers, rejected)
-
-    def classify(self, payload):
-        return classify_free_answer(*parse_classify(payload))
-
 
 if __name__ == "__main__":
-    print(f"Ghicește cuvântul: {len(game.words)} cuvinte, {len(game.questions)} întrebări")
-    if jev is None:
-        print("Atenție: TYPESAFE_API_KEY nu e setat, răspunsurile libere nu vor funcționa.")
+    try:
+        jev = TypeSafeClient(timeout=JEV_TIMEOUT)
+    except TypeSafeError:
+        sys.exit("Lipsește TYPESAFE_API_KEY. Jocul are nevoie de Jev ca să înțeleagă conversația.")
+    print(f"Ghicește cuvântul: {len(WORDS)} cuvinte")
     print(f"Rulează pe http://localhost:{PORT}")
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

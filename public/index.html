@@ -31,6 +31,7 @@
   #panel { position: sticky; bottom: 0; background: var(--bg); padding: 8px 0 16px;
     display: flex; flex-direction: column; gap: 8px; }
   .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+  .buttons:empty { display: none; }
   button { font: inherit; border: 1px solid var(--border); background: var(--panel); color: var(--text);
     padding: 8px 14px; border-radius: 999px; cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); }
@@ -46,7 +47,7 @@
 <main>
   <header>
     <h1>Ghicește cuvântul</h1>
-    <p>Gândește-te la un cuvânt și nu-l scrie nicăieri. Eu pun întrebări și încerc să-l ghicesc.</p>
+    <p>Gândește-te la un cuvânt și descrie-l, fără să-l spui. Eu încerc să-l ghicesc.</p>
   </header>
 
   <div id="chat" aria-live="polite"></div>
@@ -54,27 +55,27 @@
   <div id="panel">
     <div class="buttons" id="answers"></div>
     <form id="free">
-      <input id="text" placeholder="Sau răspunde liber…" autocomplete="off" maxlength="300">
+      <input id="text" placeholder="Descrie cuvântul, fără să-l spui…" autocomplete="off" maxlength="300">
       <button type="submit">Trimite</button>
     </form>
+    <div class="buttons"><button id="restart">Joc nou</button></div>
     <label class="hint"><input type="checkbox" id="showCandidates"> Arată la ce cuvinte mă gândesc</label>
   </div>
 </main>
 
 <script>
-  // Cât de „da" e fiecare buton: 1 = da, 0 = nu.
-  const QUESTION_ANSWERS = [["Da", 1], ["Nu", 0], ["Nu știu", 0.5], ["Probabil", 0.75], ["Probabil nu", 0.25]];
-  const GUESS_ANSWERS = [["Da, ai ghicit!", 1], ["Nu", 0]];
+  const OPENING = "Gata, m-am pregătit. Spune-mi ceva despre cuvântul tău, dar nu-l spune!";
 
   const chat = document.getElementById("chat");
   const buttons = document.getElementById("answers");
   const form = document.getElementById("free");
   const textInput = document.getElementById("text");
+  const restart = document.getElementById("restart");
   const showCandidates = document.getElementById("showCandidates");
 
-  // Starea jocului e ținută doar în pagină: răspunsurile ca numere, nu cuvântul jucătorului.
-  let answers = [];   // [{q: id_întrebare, y: 0..1}]
-  let rejected = [];  // ghiciri greșite
+  // Starea jocului e ținută doar în pagină. Cuvântul jucătorului nu apare nicăieri.
+  let conversation = []; // [{from: "player" | "game", text}]
+  let rejected = [];     // ghiciri greșite
   let lastTurn = null;
   let busy = false;
 
@@ -102,22 +103,19 @@
     return lastTurn && (lastTurn.kind === "done" || lastTurn.kind === "giveup");
   }
 
-  function renderButtons() {
+  function render() {
     buttons.innerHTML = "";
-    const options = finished() || !lastTurn ? [] : lastTurn.kind === "guess" ? GUESS_ANSWERS : QUESTION_ANSWERS;
-    for (const [label, y] of options) {
-      const b = document.createElement("button");
-      b.textContent = label;
-      b.disabled = busy;
-      b.onclick = () => answer(label, y);
-      buttons.appendChild(b);
+    if (lastTurn && lastTurn.kind === "guess") {
+      for (const [label, yes] of [["Da, ai ghicit!", true], ["Nu", false]]) {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.disabled = busy;
+        b.onclick = () => send(label, yes);
+        buttons.appendChild(b);
+      }
     }
-    const restart = document.createElement("button");
-    restart.textContent = "Joc nou";
     restart.className = finished() ? "primary" : "";
     restart.disabled = busy;
-    restart.onclick = startGame;
-    buttons.appendChild(restart);
     form.style.display = finished() ? "none" : "flex";
     textInput.disabled = busy;
   }
@@ -133,89 +131,56 @@
     return data;
   }
 
-  function setBusy(value) {
-    busy = value;
-    renderButtons();
-  }
-
-  // undo: anulează ultimul răspuns dacă serverul nu răspunde, ca jucătorul să poată reîncerca.
-  async function requestTurn(undo) {
-    setBusy(true);
+  // guessAnswer: true / false de la butoane; null când jucătorul scrie liber (atunci decide Jev).
+  async function send(text, guessAnswer = null) {
+    text = text.trim();
+    if (busy || finished() || !text) return;
+    addBubble(text, "me");
+    conversation.push({ from: "player", text });
+    busy = true;
+    render();
     try {
-      lastTurn = await post("/api/turn", { answers, rejected });
-      addBubble(lastTurn.message, "bot");
-      if (showCandidates.checked && lastTurn.candidates) {
-        addMeta(`Candidați: ${lastTurn.candidates.join(", ")} · siguranță ${Math.round(lastTurn.confidence * 100)}%`);
+      const turn = await post("/api/turn", {
+        conversation,
+        rejected,
+        guess: lastTurn && lastTurn.kind === "guess" ? lastTurn.guess : null,
+        guess_answer: guessAnswer,
+      });
+      lastTurn = turn;
+      rejected = turn.rejected;
+      conversation.push({ from: "game", text: turn.message });
+      addBubble(turn.message, "bot");
+      if (showCandidates.checked && turn.candidates) {
+        addMeta(`Candidați: ${turn.candidates.join(", ")} · siguranță ${Math.round(turn.confidence * 100)}%`);
       }
     } catch (err) {
-      if (undo) undo();
+      // Scoatem mesajul din conversație, ca jucătorul să-l poată trimite din nou.
+      conversation.pop();
       addError(err.message + " Mai încearcă.");
     } finally {
-      setBusy(false);
+      busy = false;
+      render();
       if (!finished()) textInput.focus();
     }
   }
 
-  // y: cât de „da" e răspunsul (0..1).
-  function applyAnswer(y) {
-    if (lastTurn.kind === "guess") {
-      if (y >= 0.5) {
-        lastTurn = { kind: "done" };
-        addBubble(`Am ghicit din ${answers.length} întrebări! Mai jucăm?`, "bot");
-        renderButtons();
-        return;
-      }
-      rejected.push(lastTurn.guess);
-      requestTurn(() => rejected.pop());
-    } else {
-      answers.push({ q: lastTurn.question_id, y });
-      requestTurn(() => answers.pop());
-    }
-  }
-
-  function answer(label, y) {
-    if (busy || !lastTurn || finished()) return;
-    addBubble(label, "me");
-    applyAnswer(y);
-  }
-
-  // Răspuns liber: Jev (clasificator one-shot) decide dacă e da, nu sau ceva între.
-  async function answerFreeText(text) {
-    if (busy || !lastTurn || finished() || !text.trim()) return;
-    addBubble(text.trim(), "me");
-    setBusy(true);
-    const body = lastTurn.kind === "guess"
-      ? { guess: lastTurn.guess, text }
-      : { q: lastTurn.question_id, text };
-    let result;
-    try {
-      result = await post("/api/classify", body);
-    } catch (err) {
-      addError(err.message);
-      setBusy(false);
-      return;
-    }
-    if (showCandidates.checked) {
-      addMeta(`Jev a înțeles: ${result.label.replace("_", " ")} (${Math.round(result.confidence * 100)}%)`);
-    }
-    busy = false;
-    applyAnswer(result.y);
-  }
-
   function startGame() {
-    answers = [];
+    conversation = [{ from: "game", text: OPENING }];
     rejected = [];
     lastTurn = null;
     chat.innerHTML = "";
-    requestTurn();
+    addBubble(OPENING, "bot");
+    render();
+    textInput.focus();
   }
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const text = textInput.value;
     textInput.value = "";
-    answerFreeText(text);
+    send(text);
   });
+  restart.addEventListener("click", startGame);
 
   startGame();
 </script>

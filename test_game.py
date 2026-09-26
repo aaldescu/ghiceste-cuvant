@@ -1,81 +1,57 @@
-"""Teste pentru motorul jocului, fără Jev: o bază de cunoștințe sintetică și jucători simulați."""
+"""Teste pentru motorul jocului, fără Jev: distribuțiile lui Jev sunt simulate."""
 
-import random
 import unittest
 
-from game import MAX_GUESSES, Game
+import game
+from game import GUESS_THRESHOLD, MAX_GUESSES, MAX_MESSAGES, NONE, next_turn
 
 
-def synthetic_game(n_words=150, n_questions=50, seed=1):
-    rng = random.Random(seed)
-    questions = [{"id": f"q{i}", "text": f"Întrebarea {i}?"} for i in range(n_questions)]
-    kb = {f"w{j}": {q["id"]: rng.choice([0.02, 0.1, 0.5, 0.9, 0.98]) for q in questions} for j in range(n_words)}
-    return Game(kb, questions), kb
+class NextTurnTest(unittest.TestCase):
+    def test_guesses_when_confident(self):
+        turn = next_turn({"pisică": 0.9, "câine": 0.05, NONE: 0.05}, [], 1)
+        self.assertEqual(turn["kind"], "guess")
+        self.assertEqual(turn["guess"], "pisică")
 
+    def test_asks_for_more_when_unsure(self):
+        turn = next_turn({"pisică": 0.4, "câine": 0.35, NONE: 0.25}, [], 1)
+        self.assertEqual(turn["kind"], "hint")
+        self.assertEqual(turn["candidates"][:2], ["pisică", "câine"])
 
-def play(game, kb, secret, rng, mistake_rate=0.0):
-    """Joacă o partidă cu un jucător care se gândește la `secret`. Întoarce (ghicit, nr_întrebări)."""
-    answers, rejected = [], []
-    for _ in range(100):
-        turn = game.next_turn(answers, rejected)
-        if turn["kind"] == "giveup":
-            return False, len(answers)
-        if turn["kind"] == "guess":
-            if turn["guess"] == secret:
-                return True, len(answers)
-            rejected.append(turn["guess"])
-            continue
-        y = 1.0 if kb[secret][turn["question_id"]] >= 0.5 else 0.0
-        if kb[secret][turn["question_id"]] == 0.5:
-            y = 0.5
-        if rng.random() < mistake_rate:
-            y = 1 - y
-        answers.append((turn["question_id"], y))
-    return False, len(answers)
+    def test_never_guesses_none(self):
+        turn = next_turn({NONE: 0.95, "pisică": 0.05}, [], 1)
+        self.assertEqual(turn["kind"], "hint")
 
+    def test_skips_rejected_words_and_renormalizes(self):
+        # Fără „pisică", „câine" are 0.45 / 0.5 = 0.9 și trece de prag.
+        turn = next_turn({"pisică": 0.5, "câine": 0.45, NONE: 0.05}, ["pisică"], 2)
+        self.assertEqual(turn["kind"], "guess")
+        self.assertEqual(turn["guess"], "câine")
+        self.assertGreaterEqual(turn["confidence"], GUESS_THRESHOLD)
 
-class GameTest(unittest.TestCase):
-    def test_first_turn_is_a_question(self):
-        game, _ = synthetic_game()
-        turn = game.next_turn([])
-        self.assertEqual(turn["kind"], "question")
-        self.assertIn(turn["question_id"], game.questions)
+    def test_guesses_anyway_after_many_messages(self):
+        turn = next_turn({"pisică": 0.4, "câine": 0.3, NONE: 0.3}, [], MAX_MESSAGES)
+        self.assertEqual(turn["kind"], "guess")
+        self.assertEqual(turn["guess"], "pisică")
 
-    def test_never_repeats_a_question(self):
-        game, kb = synthetic_game()
-        answers = []
-        for _ in range(20):
-            turn = game.next_turn(answers)
-            if turn["kind"] != "question":
-                break
-            self.assertNotIn(turn["question_id"], {q for q, _ in answers})
-            answers.append((turn["question_id"], 1.0))
-
-    def test_guesses_most_words_with_honest_player(self):
-        game, kb = synthetic_game()
-        rng = random.Random(2)
-        results = [play(game, kb, w, rng) for w in game.words]
-        wins = sum(won for won, _ in results)
-        self.assertGreater(wins / len(results), 0.95)
-
-    def test_survives_some_wrong_answers(self):
-        game, kb = synthetic_game()
-        rng = random.Random(3)
-        results = [play(game, kb, w, rng, mistake_rate=0.05) for w in game.words]
-        wins = sum(won for won, _ in results)
-        self.assertGreater(wins / len(results), 0.8)
-
-    def test_dont_know_gives_no_information(self):
-        game, _ = synthetic_game()
-        before = game.posterior([])
-        after = game.posterior([("q0", 0.5)])
-        for w in before:
-            self.assertAlmostEqual(before[w], after[w])
+    def test_gives_up_when_word_is_unknown(self):
+        turn = next_turn({NONE: 0.7, "pisică": 0.3}, [], MAX_MESSAGES)
+        self.assertEqual(turn["kind"], "giveup")
 
     def test_gives_up_after_too_many_wrong_guesses(self):
-        game, _ = synthetic_game()
-        turn = game.next_turn([], rejected=game.words[:MAX_GUESSES])
+        turn = next_turn({"pisică": 0.9, NONE: 0.1}, ["a", "b", "c", "d", "e"][:MAX_GUESSES], 3)
         self.assertEqual(turn["kind"], "giveup")
+
+    def test_says_so_after_wrong_guess(self):
+        turn = next_turn({"pisică": 0.4, NONE: 0.6}, ["câine"], 2, after_wrong_guess=True)
+        self.assertEqual(turn["message"], game.AFTER_WRONG_GUESS)
+
+
+class WordsTest(unittest.TestCase):
+    def test_word_list_fits_in_one_choice(self):
+        words = game.load_words()
+        self.assertLessEqual(len(words), game.MAX_WORDS)
+        self.assertEqual(len(words), len(set(words)))
+        self.assertNotIn(NONE, words)
 
 
 if __name__ == "__main__":

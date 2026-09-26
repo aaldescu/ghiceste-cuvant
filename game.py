@@ -1,106 +1,80 @@
-"""Motorul jocului: alege întrebarea următoare și ghicește, fără niciun model generativ.
+"""Motorul jocului: decide ce răspunde jocul, fără niciun model generativ.
 
-Baza de cunoștințe (data/kb.json, făcută de Jev cu build_kb.py) dă pentru fiecare cuvânt
-P(da | cuvânt, întrebare). Cu fiecare răspuns actualizăm probabilitatea fiecărui cuvânt
-(regula lui Bayes) și alegem întrebarea care, în medie, reduce cel mai mult incertitudinea.
-
-Un răspuns e un număr y între 0 și 1: cât de „da" e răspunsul
-(Da = 1, Probabil = 0.75, Nu știu = 0.5, Probabil nu = 0.25, Nu = 0).
+Jucătorul descrie cuvântul în conversație, fără să-l spună. La fiecare mesaj, Jev (server.py)
+dă o distribuție de probabilitate peste cuvintele din data/cuvinte.txt, plus „niciunul".
+Aici decidem doar ce face jocul cu distribuția: ghicește, cere mai multe indicii sau renunță.
+Replicile jocului sunt șabloane fixe, nu text generat.
 """
 
-import json
-import math
 from pathlib import Path
 
 DATA = Path(__file__).resolve().parent / "data"
-KB_PATH = DATA / "kb.json"
+NONE = "niciunul"  # eticheta pentru „niciun cuvânt din listă nu se potrivește"
 
-GUESS_THRESHOLD = 0.6  # ghicim când cel mai probabil cuvânt trece de pragul ăsta
-MAX_QUESTIONS = 25  # după atâtea întrebări ghicim oricum
-MIN_GAIN = 0.02  # sub câștigul ăsta (în biți) o întrebare nu mai merită pusă
+GUESS_THRESHOLD = 0.7  # ghicim când cel mai probabil cuvânt trece de pragul ăsta
+MAX_MESSAGES = 8  # după atâtea mesaje ale jucătorului ghicim oricum
 MAX_GUESSES = 5  # după atâtea ghiciri greșite ne dăm bătuți
-NOISE = 0.07  # jucătorii (și Jev) mai greșesc: nicio probabilitate nu e 0 sau 1
+MAX_WORDS = 254  # Jev acceptă cel mult 255 de variante într-un Choice (una e „niciunul")
+
+# Replici când jocul nu are încă o idee bună. Alegem una după numărul de mesaje, ca să varieze.
+NO_IDEA = [
+    "Încă nu îmi dau seama. Spune-mi mai mult.",
+    "Hmm, nu am nicio idee încă. Cum arată? Unde îl găsești?",
+    "Mai dă-mi un indiciu.",
+    "Tot nu știu. La ce folosește sau ce face?",
+]
+SOME_IDEA = [
+    "Hmm, mă duce cu gândul la ceva… dar nu sunt sigur. Mai spune-mi.",
+    "Cred că mă apropii. Mai dă-mi un indiciu.",
+    "Am o bănuială, dar mai am nevoie de un detaliu.",
+    "Aproape! Mai spune-mi ceva.",
+]
+AFTER_WRONG_GUESS = "Nu? Bine, atunci mai spune-mi ceva despre el."
+GIVE_UP = "M-ai învins! Nu îmi dau seama la ce cuvânt te-ai gândit."
+UNKNOWN_WORD = "M-ai învins! Cred că nu cunosc cuvântul ăsta."
 
 
 def load_words():
     lines = (DATA / "cuvinte.txt").read_text(encoding="utf-8").splitlines()
-    return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+    words = list(dict.fromkeys(line.strip() for line in lines if line.strip() and not line.startswith("#")))
+    if len(words) > MAX_WORDS:
+        raise ValueError(f"Prea multe cuvinte: {len(words)} (maxim {MAX_WORDS}).")
+    return words
 
 
-def load_questions():
-    return json.loads((DATA / "intrebari.json").read_text(encoding="utf-8"))
+def next_turn(word_probs, rejected, player_messages, after_wrong_guess=False):
+    """Decide replica jocului.
 
+    word_probs: {cuvânt: probabilitate} de la Jev, cu cheia NONE pentru „niciunul".
+    rejected: cuvintele ghicite greșit până acum (nu le mai propunem).
+    player_messages: câte mesaje a scris jucătorul până acum.
+    """
+    if len(rejected) >= MAX_GUESSES:
+        return {"kind": "giveup", "message": GIVE_UP}
 
-def entropy(probs):
-    return -sum(p * math.log2(p) for p in probs if p > 0)
+    rejected = set(rejected)
+    probs = {w: p for w, p in word_probs.items() if w not in rejected}
+    total = sum(probs.values())
+    probs = {w: p / total for w, p in probs.items()} if total > 0 else {NONE: 1.0}
+    ranked = sorted(probs.items(), key=lambda item: item[1], reverse=True)
+    words_only = [(w, p) for w, p in ranked if w != NONE]
+    info = {"candidates": [w for w, _ in words_only[:3]], "none": round(probs.get(NONE, 0.0), 3)}
 
+    if not words_only:
+        return {"kind": "giveup", "message": GIVE_UP, "confidence": 0.0, **info}
+    top_word, top_p = words_only[0]
+    info["confidence"] = round(top_p, 3)
 
-class Game:
-    def __init__(self, kb_words, questions):
-        self.questions = {q["id"]: q["text"] for q in questions if all(q["id"] in a for a in kb_words.values())}
-        self.words = sorted(kb_words)
-        # P(da) curățat de extreme, ca un singur răspuns greșit să nu elimine definitiv cuvântul corect.
-        self.p_yes = {
-            w: {q: NOISE + (1 - 2 * NOISE) * kb_words[w][q] for q in self.questions} for w in self.words
-        }
+    if top_p >= GUESS_THRESHOLD:
+        return {"kind": "guess", "guess": top_word, "message": f"Te gândești la „{top_word}”?", **info}
+    if player_messages >= MAX_MESSAGES:
+        if ranked[0][0] == NONE:
+            return {"kind": "giveup", "message": UNKNOWN_WORD, **info}
+        return {"kind": "guess", "guess": top_word, "message": f"Nu sunt sigur… „{top_word}”?", **info}
 
-    @classmethod
-    def load(cls):
-        if not KB_PATH.exists():
-            raise FileNotFoundError(f"Lipsește {KB_PATH.name}. Rulează întâi: python3 build_kb.py")
-        kb = json.loads(KB_PATH.read_text(encoding="utf-8"))["words"]
-        return cls(kb, load_questions())
-
-    def posterior(self, answers, rejected=()):
-        """answers: [(id_întrebare, y)]. Întoarce {cuvânt: probabilitate}, fără cuvintele respinse."""
-        rejected = set(rejected)
-        log_p = {w: 0.0 for w in self.words if w not in rejected}
-        for q, y in answers:
-            for w in log_p:
-                p = self.p_yes[w][q]
-                log_p[w] += math.log(y * p + (1 - y) * (1 - p))
-        if not log_p:
-            return {}
-        top = max(log_p.values())
-        weights = {w: math.exp(v - top) for w, v in log_p.items()}
-        total = sum(weights.values())
-        return {w: v / total for w, v in weights.items()}
-
-    def best_question(self, post, asked):
-        """Întrebarea cu cel mai mare câștig de informație așteptat, și câștigul ei."""
-        current = entropy(post.values())
-        best, best_gain = None, 0.0
-        for q in self.questions:
-            if q in asked:
-                continue
-            yes = {w: pw * self.p_yes[w][q] for w, pw in post.items()}
-            no = {w: pw - yes[w] for w, pw in post.items()}
-            p_yes, p_no = sum(yes.values()), sum(no.values())
-            expected = sum(
-                mass * entropy(v / mass for v in branch.values())
-                for mass, branch in ((p_yes, yes), (p_no, no))
-                if mass > 0
-            )
-            gain = current - expected
-            if gain > best_gain:
-                best, best_gain = q, gain
-        return best, best_gain
-
-    def next_turn(self, answers, rejected=()):
-        post = self.posterior(answers, rejected)
-        if not post or len(rejected) >= MAX_GUESSES:
-            return {"kind": "giveup", "message": "M-ai învins! Nu mai am nicio idee la ce cuvânt te-ai gândit."}
-
-        ranked = sorted(post.items(), key=lambda item: item[1], reverse=True)
-        top_word, top_p = ranked[0]
-        info = {
-            "confidence": round(top_p, 3),
-            "candidates": [w for w, _ in ranked[:3]],
-            "asked": len(answers),
-        }
-
-        asked = {q for q, _ in answers}
-        question, gain = self.best_question(post, asked)
-        if top_p >= GUESS_THRESHOLD or len(answers) >= MAX_QUESTIONS or question is None or gain < MIN_GAIN:
-            return {"kind": "guess", "guess": top_word, "message": f"Te gândești la „{top_word}”?", **info}
-        return {"kind": "question", "question_id": question, "message": self.questions[question], **info}
+    if after_wrong_guess:
+        message = AFTER_WRONG_GUESS
+    else:
+        lines = SOME_IDEA if top_p >= 0.3 else NO_IDEA
+        message = lines[player_messages % len(lines)]
+    return {"kind": "hint", "message": message, **info}
