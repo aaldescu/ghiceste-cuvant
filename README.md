@@ -6,7 +6,7 @@ Tu doar răspunzi la întrebări (Da / Nu / Nu știu / Probabil / Probabil nu, s
 
 ## Cum funcționează
 
-- `server.js`: un server Node mic, fără stare. La fiecare răspuns trimite toată conversația la
+- `server.py`: un server Python mic, fără stare (doar biblioteca standard + `anthropic`). La fiecare răspuns trimite toată conversația la
   Claude API (`claude-opus-5`, adaptive thinking, efort `medium`) și primește înapoi un JSON
   structurat: o întrebare, o ghicire sau finalul jocului, plus lista de cuvinte candidate și cât de sigur e.
 - `public/index.html`: interfața de chat. Istoria conversației e ținută doar în memoria paginii.
@@ -17,11 +17,14 @@ Tu doar răspunzi la întrebări (Da / Nu / Nu știu / Probabil / Probabil nu, s
 
 ## Pornire
 
+Ai nevoie de Python 3.10+.
+
 ```bash
-npm install
+python3 -m venv .venv && source .venv/bin/activate   # opțional
+pip install -r requirements.txt
 export ANTHROPIC_API_KEY=sk-ant-...
-npm start
-# deschide http://localhost:3000
+python3 server.py
+# deschide http://localhost:8000
 ```
 
-Variabile opționale: `PORT` (implicit 3000), `CLAUDE_MODEL` (implicit `claude-opus-5`).
+Variabile opționale: `PORT` (implicit 8000), `CLAUDE_MODEL` (implicit `claude-opus-5`).
