@@ -1,0 +1,29 @@
+# Cuvinte scoase din vocabular (vezi build_words.py). Sunt substantive în LOC, dar în subtitrări
+# apar de obicei ca forme fără diacritice sau articulate ale altui cuvânt.
+vina
+pasă
+cat
+zona
+oară
+ore
+tara
+tară
+mana
+tura
+sef
+cana
+tava
+coma
+cara
+lame
+gat
+calc
+fisă
+bina
+ziuă
+mer
+nea
+para
+fire
+ol
+criță

@@ -1,23 +1,30 @@
-"""Ghicește cuvântul: jucătorul descrie un cuvânt în conversație, fără să-l spună, iar jocul îl ghicește.
+"""Pisica și șoarecele: jucătorul (șoarecele) ascunde un cuvânt și dă indicii, jocul (pisica) îl vânează.
 
-Fără model generativ. La fiecare mesaj, Jev (TypeSafe AI, clasificator one-shot) citește toată
-conversația și dă, într-o singură cerere:
-  - o distribuție de probabilitate peste cuvintele din data/cuvinte.txt (plus „niciunul");
-  - dacă jocul tocmai a ghicit, ce a vrut să spună jucătorul: da sau nu.
-Replica jocului e aleasă din șabloane fixe în game.py.
+Fără model generativ. Jev (TypeSafe AI, clasificator one-shot) e folosit în două locuri:
+  - /api/turn, la fiecare mesaj: citește toată conversația, în două cereri:
+      1. care subcategorii din graf se potrivesc (data/categorii.json) și, după o încercare,
+         dacă jucătorul a confirmat-o („da, m-ai prins”) sau a dat alt indiciu;
+      2. care cuvânt, doar dintre cuvintele subcategoriilor alese (cel mult 254, plus „niciunul").
+    Cuvântul NU e scris nicăieri în timpul rundei: e doar în capul jucătorului.
+  - /api/judge, la final: dacă pisica l-a prins, cuvântul e încercarea confirmată; altfel jucătorul e
+    obligat să-l spună. Jev verifică fiecare indiciu (e adevărat? e util? conține cuvântul?), iar codul
+    verifică dacă jucătorul a spus „nu” la o încercare care era chiar cuvântul lui.
+Replicile jocului sunt șabloane fixe în game.py.
 
-Cuvântul NU există nicăieri în sistem: nici în server, nici în browser.
 Serverul e fără stare: browserul trimite la fiecare pas toată conversația.
 """
 
 import json
 import os
+import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from typesafe_sdk import (
     Choice,
+    Noul,
     TypeSafeAPIConnectionError,
     TypeSafeAPIError,
     TypeSafeAPITimeoutError,
@@ -32,34 +39,74 @@ import game
 HERE = Path(__file__).resolve().parent
 PORT = int(os.environ.get("PORT", "8000"))
 MAX_BODY = 50_000
-MAX_CONVERSATION = 40  # mesaje în total (jucător + joc)
+MAX_CONVERSATION = 60  # mesaje în total (jucător + joc)
 MAX_TEXT = 300
 JEV_TIMEOUT = 15  # secunde; o cerere normală durează sub o secundă
+JUDGE_WORKERS = 8  # câte indicii verificăm în paralel la final
 
-WORDS = game.load_words()
-WORD_SET = set(WORDS)
+GRAPH = game.Graph.load()
+WORD_SET = set(GRAPH.words)
+WORDS_BY_LOWER = {w.lower(): w for w in GRAPH.words}
 
 CONTEXT = (
     "Joc de ghicit cuvinte. Jucătorul se gândește la un cuvânt și îl descrie în conversație, "
-    "fără să-l spună. Jocul încearcă să ghicească. Mesajele sunt în ordine; "
-    "`cuvinte_respinse` sunt cuvinte pe care jucătorul a spus deja că nu sunt cuvântul lui."
+    "fără să-l spună. Jocul încearcă un cuvânt după fiecare indiciu; dacă jucătorul scrie alt indiciu, "
+    "încercarea a fost greșită. `cuvinte_respinse` sunt cuvintele încercate greșit. O încercare greșită "
+    "respinge doar acel cuvânt exact: un sinonim sau un cuvânt apropiat poate fi în continuare cuvântul jucătorului."
 )
 GUESS_ANSWER = Choice(
     instructions="Ultimul mesaj al jocului a fost o încercare de a ghici cuvântul. "
     "Ce a răspuns jucătorul în ultimul lui mesaj?",
     criteria={
         "da": "Jucătorul confirmă: jocul a ghicit cuvântul.",
-        "nu": "Jucătorul spune că nu e cuvântul, sau continuă să descrie fără să confirme.",
+        "nu": "Jucătorul spune că nu e cuvântul, sau scrie un indiciu nou fără să confirme.",
     },
 )
+CATEGORY_QUESTION = Choice(
+    instructions="În care categorie intră cuvântul la care se gândește jucătorul, după tot ce a spus în conversație?",
+    criteria={cid: c["descriere"] for cid, c in GRAPH.categories.items()},
+)
+
+JUDGE_CONTEXT = (
+    "Joc de ghicit cuvinte. Jucătorul a descris cuvântul lui fără să-l spună, iar acum l-a dezvăluit. "
+    "Verificăm fiecare indiciu, în contextul conversației de până la el."
+)
+JUDGE_QUESTIONS = {
+    "e_indiciu": Noul(
+        instructions="Spune `indiciu` ceva despre cuvântul jucătorului (o informație, adevărată sau nu)?",
+        criteria={
+            "true": "Mesajul descrie cuvântul: ce e, cum arată, la ce folosește, cu ce seamănă, "
+            "cu ce diferă de o încercare a jocului.",
+            "false": "Mesajul e doar o reacție sau o vorbă fără informație (hmm, ok, haha, nu, aproape, mai încearcă).",
+        },
+    ),
+    "adevarat": Noul(
+        instructions="Este adevărat `indiciu` despre `cuvant`, în contextul conversației?",
+        criteria={
+            "true": "Indiciul e adevărat pentru sensul obișnuit al cuvântului (sau pentru un sens cunoscut al lui).",
+            "false": "Indiciul e fals pentru cuvânt: spune ceva ce nu se potrivește.",
+        },
+    ),
+    "util": Noul(
+        instructions="Ajută `indiciu` cu adevărat la ghicirea lui `cuvant`?",
+        criteria={
+            "true": "Indiciul restrânge mult posibilitățile spre cuvânt (de exemplu: „gătești în ea” pentru tigaie).",
+            "false": "Indiciul e atât de general încât se potrivește la aproape orice (de exemplu: „e un lucru”, "
+            "„există”), sau nu spune nimic despre cuvânt.",
+        },
+    ),
+    "spune_cuvantul": Noul(
+        instructions="Conține `indiciu` chiar cuvântul `cuvant` sau o formă a lui (plural, articulat, diminutiv)?"
+    ),
+}
 
 
-def word_question(excluded):
+def word_question(words):
     return Choice(
         instructions="La care dintre aceste cuvinte se gândește jucătorul, după tot ce a spus în conversație? "
         f"Alege `{game.NONE}` dacă niciun cuvânt nu se potrivește.",
         criteria={
-            **{w: None for w in WORDS if w not in excluded},
+            **{w: None for w in words},
             game.NONE: "Niciun cuvânt din listă nu se potrivește cu descrierea.",
         },
     )
@@ -69,11 +116,8 @@ class BadRequest(Exception):
     pass
 
 
-def parse_turn(payload):
+def parse_conversation(payload):
     conversation = payload.get("conversation")
-    rejected = payload.get("rejected", [])
-    guess = payload.get("guess")
-    guess_answer = payload.get("guess_answer")
     if not isinstance(conversation, list) or not 0 < len(conversation) <= MAX_CONVERSATION:
         raise BadRequest("Conversație invalidă.")
     for m in conversation:
@@ -81,47 +125,93 @@ def parse_turn(payload):
             raise BadRequest("Mesaj invalid.")
         if not isinstance(m.get("text"), str) or not 0 < len(m["text"].strip()) <= MAX_TEXT:
             raise BadRequest(f"Un mesaj trebuie să aibă între 1 și {MAX_TEXT} de caractere.")
+    return conversation
+
+
+def parse_turn(payload):
+    conversation = parse_conversation(payload)
+    rejected = payload.get("rejected", [])
+    guess = payload.get("guess")
+    next_guess = payload.get("next_guess")
     if conversation[-1]["from"] != "player":
         raise BadRequest("Ultimul mesaj trebuie să fie al jucătorului.")
     if not isinstance(rejected, list) or not all(w in WORD_SET for w in rejected):
         raise BadRequest("Listă de cuvinte respinse invalidă.")
     if guess is not None and guess not in WORD_SET:
-        raise BadRequest("Ghicire invalidă.")
-    if guess_answer is not None and not isinstance(guess_answer, bool):
-        raise BadRequest("Răspuns invalid.")
-    return conversation, rejected, guess, guess_answer
+        raise BadRequest("Încercare invalidă.")
+    if next_guess is not None and next_guess not in WORD_SET:
+        raise BadRequest("Ghicire de rezervă invalidă.")
+    return conversation, rejected, guess, next_guess
 
 
-def play_turn(conversation, rejected, guess, guess_answer):
-    """Un pas de joc: o singură cerere la Jev, apoi game.next_turn decide replica."""
-    # Dacă jocul a ghicit, întrebăm speculativ fără cuvântul ghicit: îl folosim doar dacă răspunsul e „nu".
-    excluded = set(rejected) | ({guess} if guess else set())
-    questions = {"cuvant": word_question(excluded)}
-    if guess and guess_answer is None:
-        questions["raspuns_ghicire"] = GUESS_ANSWER
-    result = jev.system_one(
-        state={
-            "context": CONTEXT,
-            "conversatie": [
-                {"cine": "jucător" if m["from"] == "player" else "joc", "text": m["text"].strip()}
-                for m in conversation
-            ],
-            "cuvinte_respinse": sorted(excluded),
-        },
-        questions=questions,
-    )
+def parse_judge(payload):
+    conversation = parse_conversation(payload)
+    word = payload.get("word")
+    rejected = payload.get("rejected", [])
+    if not isinstance(word, str) or not 0 < len(word.strip()) <= 60:
+        raise BadRequest("Spune cuvântul tău.")
+    if not isinstance(rejected, list) or not all(isinstance(w, str) for w in rejected):
+        raise BadRequest("Listă de încercări invalidă.")
+    return word.strip(), conversation, rejected, bool(payload.get("escaped"))
 
+
+def as_state_messages(conversation):
+    return [{"cine": "jucător" if m["from"] == "player" else "joc", "text": m["text"].strip()} for m in conversation]
+
+
+def mentioned_words(conversation):
+    """Cuvintele din vocabular scrise de jucător. Regula e că nu spune cuvântul, deci nu pot fi răspunsul."""
+    text = " ".join(m["text"].lower() for m in conversation if m["from"] == "player")
+    tokens = set(re.findall(r"[a-zăâîșțşţ-]+", text.replace("ş", "ș").replace("ţ", "ț")))
+    return {w for w in WORD_SET if (w.lower() in text if " " in w else w.lower() in tokens)}
+
+
+def play_turn(conversation, rejected, guess, next_guess):
+    """Un pas al pisicii: două cereri la Jev (subcategorie, apoi cuvânt), apoi game.next_turn alege încercarea.
+
+    guess: încercarea la care răspunde jucătorul acum. Căutăm speculativ fără ea; dacă Jev vede că
+    jucătorul a confirmat-o, runda se termină („caught”) și rezultatul căutării nu mai contează.
+    """
+    rejected = rejected + [guess] if guess and guess not in rejected else list(rejected)
+    state = {"context": CONTEXT, "conversatie": as_state_messages(conversation), "cuvinte_respinse": sorted(rejected)}
+    questions = {"categorie": CATEGORY_QUESTION}
     if guess:
-        if guess_answer is None:
-            guess_answer = result.choices["raspuns_ghicire"].probabilities.get("da", 0.0) >= 0.5
-        if guess_answer:
-            return {"kind": "done", "message": f"Am ghicit: „{guess}”! Mai jucăm?", "rejected": rejected}
-        rejected = rejected + [guess]
+        questions["raspuns_incercare"] = GUESS_ANSWER
+    first = jev.system_one(state=state, questions=questions)
+    if guess and first.choices["raspuns_incercare"].probabilities.get("da", 0.0) >= 0.5:
+        return {"kind": "caught", "word": guess, "message": f"Te-am prins! 🐱 Era „{guess}”."}
 
-    player_messages = sum(m["from"] == "player" for m in conversation)
-    probs = result.choices["cuvant"].probabilities
-    turn = game.next_turn(probs, rejected, player_messages, after_wrong_guess=bool(guess))
+    excluded = set(rejected) | mentioned_words(conversation)
+    if next_guess in excluded:
+        next_guess = None
+    words, coverage = GRAPH.select_words(first.choices["categorie"].probabilities, excluded)
+    second = jev.system_one(state=state, questions={"cuvant": word_question(words)})
+    # Probabilitatea finală a unui cuvânt: cât acoperă subcategoriile alese × alegerea lui Jev între cuvinte.
+    probs = {w: coverage * p for w, p in second.choices["cuvant"].probabilities.items() if w != game.NONE}
+    probs[game.NONE] = max(0.0, 1.0 - sum(probs.values()))
+    turn = game.next_turn(probs, rejected, after_wrong_guess=bool(rejected), next_guess=next_guess)
     return {**turn, "rejected": rejected}
+
+
+def judge_round(word, conversation, rejected, escaped):
+    """Verifică fiecare mesaj al jucătorului față de cuvântul dezvăluit și calculează scorul."""
+    known = WORDS_BY_LOWER.get(word.lower())
+    word = known or word
+    lied_on = next((w for w in rejected if w.lower() == word.lower()), None)
+    messages = as_state_messages(conversation)
+    clue_positions = [i for i, m in enumerate(conversation) if m["from"] == "player"]
+
+    def judge(i):
+        state = {"context": JUDGE_CONTEXT, "cuvant": word, "conversatie_anterioara": messages[:i], "indiciu": messages[i]["text"]}
+        result = jev.system_one(state=state, questions=JUDGE_QUESTIONS)
+        judgment = {name: round(answer.noul, 3) for name, answer in result.nouls.items()}
+        verdict = game.judge_clue(judgment)
+        return {"text": messages[i]["text"], "verdict": verdict, "label": game.VERDICTS[verdict], **judgment}
+
+    with ThreadPoolExecutor(JUDGE_WORKERS) as pool:
+        clues = list(pool.map(judge, clue_positions))
+    verdicts = [c["verdict"] for c in clues]
+    return {"word": word, "clues": clues, **game.score_round(verdicts, escaped, lied_on, known_word=bool(known))}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -134,6 +224,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == "/api/words":
+            # Browserul verifică local că cuvântul ales e în dicționar, fără să-l trimită.
+            self.send_json(200, {"words": GRAPH.words, "max_guesses": game.MAX_GUESSES})
+            return
         if self.path not in ("/", "/index.html"):
             self.send_error(404)
             return
@@ -145,7 +239,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if self.path != "/api/turn":
+        routes = {
+            "/api/turn": lambda p: play_turn(*parse_turn(p)),
+            "/api/judge": lambda p: judge_round(*parse_judge(p)),
+        }
+        if self.path not in routes:
             self.send_error(404)
             return
         try:
@@ -155,7 +253,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
             if not isinstance(payload, dict):
                 raise BadRequest("Cerere invalidă.")
-            self.send_json(200, play_turn(*parse_turn(payload)))
+            self.send_json(200, routes[self.path](payload))
         except (BadRequest, ValueError) as e:
             self.send_json(400, {"error": str(e) if isinstance(e, BadRequest) else "Cerere invalidă."})
         except TypeSafeAuthenticationError:
@@ -179,6 +277,6 @@ if __name__ == "__main__":
         jev = TypeSafeClient(timeout=JEV_TIMEOUT)
     except TypeSafeError:
         sys.exit("Lipsește TYPESAFE_API_KEY. Jocul are nevoie de Jev ca să înțeleagă conversația.")
-    print(f"Ghicește cuvântul: {len(WORDS)} cuvinte")
+    print(f"Pisica și șoarecele: {len(GRAPH.words)} cuvinte în {len(GRAPH.categories)} categorii")
     print(f"Rulează pe http://localhost:{PORT}")
     ThreadingHTTPServer(("", PORT), Handler).serve_forever()

@@ -3,40 +3,61 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ghicește cuvântul</title>
+<title>Pisica și șoarecele</title>
 <style>
   :root {
     --bg: #f6f5f1; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6a66;
     --accent: #c2572b; --bot: #efece4; --me: #c2572b; --me-text: #fff; --border: #e2dfd6;
+    --ok: #2f7d4f; --warn: #a86a00; --bad: #c0392b;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #1a1918; --panel: #232220; --text: #eeece6; --muted: #9d9a92;
       --accent: #e07a4f; --bot: #2e2c29; --me: #b8532a; --me-text: #fff; --border: #3a3834;
+      --ok: #5cbf85; --warn: #e0a63a; --bad: #ef6b5b;
     }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
     font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 640px; margin: 0 auto; padding: 16px; min-height: 100vh;
+  /* Pagina are exact înălțimea ecranului; doar conversația derulează, iar câmpul de scris rămâne jos. */
+  main { max-width: 640px; margin: 0 auto; padding: 16px 16px 0; height: 100vh; height: 100dvh;
     display: flex; flex-direction: column; gap: 12px; }
   header h1 { margin: 8px 0 0; font-size: 1.5rem; }
   header p { margin: 4px 0 0; color: var(--muted); font-size: .95rem; }
-  #chat { flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
+  #status { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .9rem; color: var(--muted); }
+  #status:empty { display: none; }
+  #chat { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
   .msg { max-width: 85%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; }
   .bot { background: var(--bot); align-self: flex-start; border-bottom-left-radius: 4px; }
   .me { background: var(--me); color: var(--me-text); align-self: flex-end; border-bottom-right-radius: 4px; }
+  .me.timeout { background: transparent; color: var(--muted); border: 1px dashed var(--border); }
   .meta { font-size: .8rem; color: var(--muted); align-self: flex-start; margin-top: -4px; }
-  .error { color: #d33; font-size: .9rem; }
-  #panel { position: sticky; bottom: 0; background: var(--bg); padding: 8px 0 16px;
+  .error { color: var(--bad); font-size: .9rem; }
+  .result { align-self: stretch; max-width: none; background: var(--panel); border: 1px solid var(--border); }
+  .result h2 { margin: 0 0 8px; font-size: 1.1rem; }
+  .result ul { margin: 0 0 8px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+  .result li { display: flex; gap: 8px; }
+  .result .tag { flex: none; min-width: 9.5em; font-size: .85rem; font-weight: 600; }
+  .tag.valid { color: var(--ok); }
+  .tag.vag, .tag.indoielnic { color: var(--warn); }
+  .tag.minciuna, .tag.spune_cuvantul { color: var(--bad); }
+  .tag.nu_e_indiciu { color: var(--muted); font-weight: 400; }
+  .result .score { font-size: 1.1rem; font-weight: 700; margin: 0; }
+  .result .record { margin: 0; color: var(--muted); font-size: .9rem; }
+  #timer { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+  #timer[hidden] { display: none; }
+  #timer div { height: 100%; width: 100%; background: var(--ok); transition: width .25s linear; }
+  #timer.low div { background: var(--bad); }
+  #panel { background: var(--bg); padding: 8px 0 16px;
     display: flex; flex-direction: column; gap: 8px; }
   .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
-  .buttons:empty { display: none; }
   button { font: inherit; border: 1px solid var(--border); background: var(--panel); color: var(--text);
     padding: 8px 14px; border-radius: 999px; cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
   button:disabled { opacity: .5; cursor: default; }
+  button[hidden] { display: none; }
   form { display: flex; gap: 8px; }
   #text { flex: 1; min-width: 0; font: inherit; padding: 8px 14px; border-radius: 999px;
     border: 1px solid var(--border); background: var(--panel); color: var(--text); }
@@ -46,45 +67,72 @@
 <body>
 <main>
   <header>
-    <h1>Ghicește cuvântul</h1>
-    <p>Gândește-te la un cuvânt și descrie-l, fără să-l spui. Eu încerc să-l ghicesc.</p>
+    <h1>Pisica și șoarecele</h1>
+    <p>Tu ești șoarecele: gândește-te la un cuvânt, nu-l scrie nicăieri, și dă indicii adevărate.
+      Pisica încearcă un cuvânt după fiecare indiciu. Fiecare indiciu adevărat și util îți aduce un punct.
+      La final ești obligat să spui cuvântul, iar pisica îți verifică indiciile.</p>
   </header>
 
+  <div id="status" aria-live="polite"></div>
   <div id="chat" aria-live="polite"></div>
 
   <div id="panel">
-    <div class="buttons" id="answers"></div>
+    <div id="timer" hidden><div></div></div>
     <form id="free">
-      <input id="text" placeholder="Descrie cuvântul, fără să-l spui…" autocomplete="off" maxlength="300">
-      <button type="submit">Trimite</button>
+      <input id="text" autocomplete="off" maxlength="300">
+      <button type="submit" id="submit">Trimite</button>
     </form>
-    <div class="buttons"><button id="restart">Joc nou</button></div>
-    <label class="hint"><input type="checkbox" id="showCandidates"> Arată la ce cuvinte mă gândesc</label>
+    <div class="buttons">
+      <button id="caught" class="primary" hidden>Da, m-ai prins!</button>
+      <button id="surrender">Mă predau</button>
+      <button id="restart">Joc nou</button>
+    </div>
+    <label class="hint"><input type="checkbox" id="showCandidates"> Arată la ce cuvinte se gândește pisica</label>
   </div>
 </main>
 
 <script>
-  const OPENING = "Gata, m-am pregătit. Spune-mi ceva despre cuvântul tău, dar nu-l spune!";
+  const CLUE_SECONDS = 30;    // timp pentru fiecare indiciu; dacă expiră, pisica mai încearcă o dată
+  const REVEAL_SECONDS = 60;  // timp ca să spui cuvântul la final; dacă expiră, runda e pierdută
+  const TIMEOUT_TEXT = "(timpul a expirat)";
+  const RECORD_KEY = "pisica-soarece-record";
+  const ICONS = { valid: "✓", vag: "~", indoielnic: "?", minciuna: "✗", spune_cuvantul: "✗", nu_e_indiciu: "·" };
+  const REASONS = {
+    minciuna: (r, bad) => `indiciul „${bad.text}” e fals`,
+    spune_cuvantul: (r, bad) => `indiciul „${bad.text}” conține cuvântul`,
+    a_mintit_la_incercare: (r) => `ai spus „nu” când pisica a încercat „${r.lied_on}”, dar era cuvântul tău`,
+  };
 
+  const statusBar = document.getElementById("status");
   const chat = document.getElementById("chat");
-  const buttons = document.getElementById("answers");
+  const timerBar = document.getElementById("timer");
   const form = document.getElementById("free");
   const textInput = document.getElementById("text");
+  const submit = document.getElementById("submit");
+  const caughtButton = document.getElementById("caught");
+  const surrender = document.getElementById("surrender");
   const restart = document.getElementById("restart");
   const showCandidates = document.getElementById("showCandidates");
 
-  // Starea jocului e ținută doar în pagină. Cuvântul jucătorului nu apare nicăieri.
-  let conversation = []; // [{from: "player" | "game", text}]
-  let rejected = [];     // ghiciri greșite
-  let lastTurn = null;
+  // Cuvântul jucătorului nu e scris nicăieri în timpul rundei. Îl aflăm doar la final:
+  // de la pisică, dacă l-a ghicit, sau de la jucător, care e obligat să-l spună.
+  let phase = "play";      // play → reveal → judging → over
+  let conversation = [];   // [{from: "player" | "game", text}]
+  let rejected = [];       // încercările pisicii la care jucătorul a răspuns cu alt indiciu
+  let guess = null;        // încercarea la care răspunde jucătorul acum
+  let nextGuess = null;    // al doilea candidat al pisicii, pentru încercarea următoare
+  let escaped = false;
+  let maxGuesses = 20;
   let busy = false;
+  let deadline = 0;
+  let timerId = null;
 
   function addBubble(text, who) {
     const div = document.createElement("div");
     div.className = "msg " + who;
     div.textContent = text;
     chat.appendChild(div);
-    div.scrollIntoView({ behavior: "smooth", block: "end" });
+    scrollToEnd();
     return div;
   }
 
@@ -93,95 +141,269 @@
     div.className = "meta";
     div.textContent = text;
     chat.appendChild(div);
+    scrollToEnd();
   }
 
   function addError(message) {
     addBubble(message, "bot").classList.add("error");
   }
 
-  function finished() {
-    return lastTurn && (lastTurn.kind === "done" || lastTurn.kind === "giveup");
+  function scrollToEnd() {
+    // Direct, fără animație: derularea „smooth” nu se termină mereu (de exemplu în taburi din fundal).
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  function clueCount() {
+    return conversation.filter((m) => m.from === "player" && m.text !== TIMEOUT_TEXT).length;
   }
 
   function render() {
-    buttons.innerHTML = "";
-    if (lastTurn && lastTurn.kind === "guess") {
-      for (const [label, yes] of [["Da, ai ghicit!", true], ["Nu", false]]) {
-        const b = document.createElement("button");
-        b.textContent = label;
-        b.disabled = busy;
-        b.onclick = () => send(label, yes);
-        buttons.appendChild(b);
-      }
-    }
-    restart.className = finished() ? "primary" : "";
-    restart.disabled = busy;
-    form.style.display = finished() ? "none" : "flex";
+    const playing = phase === "play";
+    textInput.placeholder = phase === "reveal" ? "Care era cuvântul tău?" : "Un indiciu, fără să spui cuvântul…";
+    submit.textContent = phase === "reveal" ? "Spune" : "Trimite";
+    form.style.display = playing || phase === "reveal" ? "flex" : "none";
     textInput.disabled = busy;
+    submit.disabled = busy;
+    caughtButton.hidden = !(playing && guess);
+    caughtButton.disabled = busy;
+    surrender.hidden = !playing;
+    surrender.disabled = busy || clueCount() === 0;
+    // Runda nu poate fi abandonată cât timp jucătorul trebuie să spună cuvântul.
+    restart.hidden = phase === "reveal" || phase === "judging";
+    restart.className = phase === "over" ? "primary" : "";
+    restart.disabled = busy;
+
+    statusBar.innerHTML = "";
+    for (const text of [`🐭 Indicii: ${clueCount()}`, `🐱 Încercări: ${rejected.length}/${maxGuesses}`]) {
+      const span = document.createElement("span");
+      span.textContent = text;
+      statusBar.appendChild(span);
+    }
   }
 
-  async function post(url, body) {
+  function setBusy(value) {
+    busy = value;
+    render();
+    if (value) stopTimer();
+    else if (phase === "play") startTimer(CLUE_SECONDS, onClueTimeout);
+    else if (phase === "reveal") startTimer(REVEAL_SECONDS, onRevealTimeout);
+    else stopTimer();
+  }
+
+  function startTimer(seconds, onExpire) {
+    stopTimer();
+    deadline = Date.now() + seconds * 1000;
+    timerBar.hidden = false;
+    const tick = () => {
+      const left = Math.max(0, deadline - Date.now());
+      timerBar.firstElementChild.style.width = `${(left / (seconds * 1000)) * 100}%`;
+      timerBar.classList.toggle("low", left < 10000);
+      if (left === 0) {
+        stopTimer();
+        onExpire();
+      }
+    };
+    tick();
+    timerId = setInterval(tick, 250);
+  }
+
+  function stopTimer() {
+    clearInterval(timerId);
+    timerId = null;
+    timerBar.hidden = true;
+  }
+
+  async function request(method, url, body) {
     const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      method,
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Eroare necunoscută.");
     return data;
   }
 
-  // guessAnswer: true / false de la butoane; null când jucătorul scrie liber (atunci decide Jev).
-  async function send(text, guessAnswer = null) {
-    text = text.trim();
-    if (busy || finished() || !text) return;
-    addBubble(text, "me");
+  // Un mesaj al jucătorului: indiciu, „da” la încercarea pisicii, sau tăcere când expiră timpul.
+  async function sendMessage(text, isTimeout = false) {
+    const bubble = addBubble(text, "me");
+    if (isTimeout) bubble.classList.add("timeout");
     conversation.push({ from: "player", text });
-    busy = true;
-    render();
+    setBusy(true);
+    let turn;
     try {
-      const turn = await post("/api/turn", {
-        conversation,
-        rejected,
-        guess: lastTurn && lastTurn.kind === "guess" ? lastTurn.guess : null,
-        guess_answer: guessAnswer,
-      });
-      lastTurn = turn;
-      rejected = turn.rejected;
-      conversation.push({ from: "game", text: turn.message });
-      addBubble(turn.message, "bot");
-      if (showCandidates.checked && turn.candidates) {
-        addMeta(`Candidați: ${turn.candidates.join(", ")} · siguranță ${Math.round(turn.confidence * 100)}%`);
-      }
+      turn = await request("POST", "/api/turn", { conversation, rejected, guess, next_guess: nextGuess });
     } catch (err) {
       // Scoatem mesajul din conversație, ca jucătorul să-l poată trimite din nou.
       conversation.pop();
       addError(err.message + " Mai încearcă.");
+      setBusy(false);
+      return;
+    }
+    if (turn.kind === "caught") {
+      endRound(turn.word, false, turn.message);
+      return;
+    }
+    rejected = turn.rejected;
+    conversation.push({ from: "game", text: turn.message });
+    addBubble(turn.message, "bot");
+    if (showCandidates.checked && turn.candidates) {
+      addMeta(`Candidați: ${turn.candidates.join(", ")} · siguranță ${Math.round((turn.confidence || 0) * 100)}%`);
+    }
+    if (turn.kind === "giveup") {
+      askForWord("Ai scăpat! 🐭 Acum spune-mi cuvântul tău: trebuie să-ți verific indiciile.", true);
+      return;
+    }
+    guess = turn.guess;
+    nextGuess = turn.next_guess || null;
+    setBusy(false);
+    textInput.focus();
+  }
+
+  function onClueTimeout() {
+    if (phase === "play" && !busy) sendMessage(TIMEOUT_TEXT, true);
+  }
+
+  // Jucătorul confirmă încercarea pisicii: cuvântul e chiar încercarea, nu mai trebuie scris.
+  function confirmCaught() {
+    if (busy || phase !== "play" || !guess) return;
+    addBubble("Da, m-ai prins!", "me");
+    conversation.push({ from: "player", text: "Da, m-ai prins!" });
+    endRound(guess, false, `Te-am prins! 🐱 Era „${guess}”.`);
+  }
+
+  function askForWord(message, didEscape) {
+    phase = "reveal";
+    escaped = didEscape;
+    guess = null;
+    addBubble(message, "bot");
+    setBusy(false);
+    textInput.focus();
+  }
+
+  function onRevealTimeout() {
+    if (phase !== "reveal" || busy) return;
+    phase = "over";
+    addBubble("Timpul a expirat și nu ai spus cuvântul. Runda e pierdută: scor 0.", "bot");
+    setBusy(false);
+  }
+
+  async function endRound(word, didEscape, message) {
+    phase = "judging";
+    guess = null;
+    addBubble(`${message} Acum îți verific indiciile…`, "bot");
+    setBusy(true);
+    try {
+      const result = await request("POST", "/api/judge", { word, conversation, rejected, escaped: didEscape });
+      showResult(result, didEscape);
+    } catch (err) {
+      addError(err.message);
     } finally {
-      busy = false;
-      render();
-      if (!finished()) textInput.focus();
+      phase = "over";
+      setBusy(false);
+    }
+  }
+
+  function showResult(result, didEscape) {
+    const card = addBubble("", "bot");
+    card.classList.add("result");
+    card.style.whiteSpace = "normal";
+
+    const title = document.createElement("h2");
+    title.textContent = `Verificarea indiciilor pentru „${result.word}”`;
+    card.appendChild(title);
+
+    const list = document.createElement("ul");
+    for (const clue of result.clues) {
+      const li = document.createElement("li");
+      const tag = document.createElement("span");
+      tag.className = "tag " + clue.verdict;
+      tag.textContent = `${ICONS[clue.verdict]} ${clue.label}`;
+      const text = document.createElement("span");
+      text.textContent = clue.text;
+      li.append(tag, text);
+      list.appendChild(li);
+    }
+    card.appendChild(list);
+
+    const score = document.createElement("p");
+    score.className = "score";
+    if (result.disqualified) {
+      const bad = result.clues.find((c) => c.verdict === result.reason);
+      score.textContent = `Descalificat: ${REASONS[result.reason](result, bad)}. Scor: 0`;
+    } else if (result.reason === "cuvant_necunoscut") {
+      score.textContent = "Pisica nu cunoaște cuvântul ăsta, deci n-avea cum să te prindă. Scor: 0";
+    } else {
+      const bonus = didEscape ? " (cu bonus pentru că ai scăpat)" : "";
+      score.textContent = `Scor: ${result.score}${bonus}`;
+    }
+    card.appendChild(score);
+
+    const record = document.createElement("p");
+    record.className = "record";
+    const previous = readRecord();
+    if (result.score > previous) {
+      writeRecord(result.score);
+      record.textContent = "Record nou!";
+    } else {
+      record.textContent = `Recordul tău: ${previous}`;
+    }
+    card.appendChild(record);
+    scrollToEnd();
+  }
+
+  function readRecord() {
+    try {
+      return Number(localStorage.getItem(RECORD_KEY)) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function writeRecord(value) {
+    try {
+      localStorage.setItem(RECORD_KEY, String(value));
+    } catch {
+      // Fără localStorage (de exemplu în modul privat), recordul nu se păstrează.
     }
   }
 
   function startGame() {
-    conversation = [{ from: "game", text: OPENING }];
+    const opening = "Gândește-te la un cuvânt și nu-l scrie nicăieri. Dă-mi primul indiciu!";
+    phase = "play";
+    conversation = [{ from: "game", text: opening }];
     rejected = [];
-    lastTurn = null;
+    guess = null;
+    nextGuess = null;
+    escaped = false;
     chat.innerHTML = "";
-    addBubble(OPENING, "bot");
-    render();
+    addBubble(opening, "bot");
+    setBusy(false);
     textInput.focus();
   }
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    const text = textInput.value;
+    const text = textInput.value.trim();
+    if (busy || !text) return;
     textInput.value = "";
-    send(text);
+    if (phase === "play") sendMessage(text);
+    else if (phase === "reveal") endRound(text, escaped, `Era „${text}”.`);
   });
-  restart.addEventListener("click", startGame);
+  caughtButton.addEventListener("click", confirmCaught);
+  surrender.addEventListener("click", () => {
+    if (!busy && phase === "play") askForWord("Te-ai predat. Acum spune-mi cuvântul tău: trebuie să-ți verific indiciile.", false);
+  });
+  restart.addEventListener("click", () => {
+    if (!busy && phase !== "reveal") startGame();
+  });
 
+  request("GET", "/api/words")
+    .then((data) => {
+      maxGuesses = data.max_guesses;
+      render();
+    })
+    .catch(() => {});
   startGame();
 </script>
 </body>
